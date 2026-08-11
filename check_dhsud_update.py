@@ -3,8 +3,10 @@
 DHSUD License-to-Sell List Monitor
 -----------------------------------
 Checks the DHSUD "List of Projects with License to Sell" data source for its
-"Data as of <Month> <Day>, <Year>" label, and emails you when that date changes
-(e.g. when it flips from "June 30, 2026" to "July 31, 2026").
+"Data as of <Month> <Day>, <Year>" label, and emails you EVERY TIME it runs
+(configured for hourly) — one message type if the date is unchanged ("still
+as of June ...") and a different, clearly-flagged message if the date has
+just changed (e.g. flips to "July 31, 2026").
 
 WHY THIS URL:
 The public page https://dhsud.gov.ph/list-of-license-to-sell/ is just a wrapper
@@ -92,26 +94,57 @@ DATE_PATTERN = re.compile(
 
 def fetch_as_of_date():
     """Load the data source in a headless browser and extract the 'Data as of' date."""
+    debug_dir = SCRIPT_DIR / "debug"
+    last_error = None
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_page(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ))
 
         for url in (DATA_SOURCE_URL, FALLBACK_URL):
             try:
-                page.goto(url, timeout=30000, wait_until="networkidle")
-                page.wait_for_timeout(2500)  # let async widget content render
-                text = page.inner_text("body")
+                # "load" is more reliable than "networkidle" for pages that
+                # keep background connections open (e.g. Apps Script apps).
+                page.goto(url, timeout=45000, wait_until="load")
+
+                # Poll for up to ~15s instead of a single fixed sleep, since
+                # render time can vary between environments.
+                text = ""
+                for _ in range(15):
+                    text = page.inner_text("body")
+                    if DATE_PATTERN.search(text):
+                        break
+                    page.wait_for_timeout(1000)
+
                 match = DATE_PATTERN.search(text)
                 if match:
                     browser.close()
                     return match.group(1).strip(), url
-            except Exception:
+
+                last_error = f"No date pattern found in body text from {url}"
+
+            except Exception as e:
+                last_error = f"Error loading {url}: {e}"
                 continue
+
+        # Save debug artifacts (screenshot + HTML) before giving up, so we
+        # can inspect what the runner actually saw.
+        try:
+            debug_dir.mkdir(exist_ok=True)
+            page.screenshot(path=str(debug_dir / "failure.png"), full_page=True)
+            (debug_dir / "failure.html").write_text(page.content())
+        except Exception:
+            pass
 
         browser.close()
         raise RuntimeError(
             "Could not find a 'Data as of ...' date on either the primary "
-            "or fallback URL. The page structure may have changed."
+            f"or fallback URL. Last error: {last_error}. "
+            "Debug screenshot/HTML saved to the 'debug' folder if the "
+            "workflow is configured to upload it as an artifact."
         )
 
 
@@ -177,16 +210,28 @@ def main():
     last_date = last_state.get("last_as_of_date")
 
     if last_date is None:
-        # First run — establish baseline, don't email.
-        print("  -> No prior state found. Saving baseline, no email sent.")
+        # First run — establish baseline, and still send a status email now
+        # (per current configuration this script emails on every run).
+        print("  -> No prior state found. Saving baseline and sending status email.")
+        subject = f"DHSUD List Monitor: baseline set (as of {current_date})"
+        body = (
+            f"Baseline established for the DHSUD License-to-Sell list monitor.\n\n"
+            f"Current: Data as of {current_date}\n\n"
+            f"You'll now get an email every time this check runs, showing the "
+            f"current 'as of' date, so you always know at a glance whether it "
+            f"has moved yet.\n\n"
+            f"View it here: https://dhsud.gov.ph/list-of-license-to-sell/\n"
+            f"(Direct data source: {source_url})\n"
+        )
+        send_email(subject, body)
         save_state(current_date, source_url)
         return
 
     if current_date != last_date:
         print(f"  -> CHANGE DETECTED: '{last_date}' -> '{current_date}'")
-        subject = f"DHSUD License-to-Sell list updated: now as of {current_date}"
+        subject = f"DHSUD list UPDATED: now as of {current_date}"
         body = (
-            f"The DHSUD List of Projects with License to Sell has been updated.\n\n"
+            f"The DHSUD List of Projects with License to Sell has been updated!\n\n"
             f"Previous: Data as of {last_date}\n"
             f"Now:      Data as of {current_date}\n\n"
             f"View it here: https://dhsud.gov.ph/list-of-license-to-sell/\n"
@@ -194,10 +239,23 @@ def main():
         )
         sent = send_email(subject, body)
         if sent:
-            print("  -> Email notification sent.")
+            print("  -> Email notification sent (change detected).")
         save_state(current_date, source_url)
     else:
         print(f"  -> No change (still 'Data as of {current_date}').")
+        subject = f"DHSUD list still as of {current_date} (no change)"
+        body = (
+            f"Checked the DHSUD License-to-Sell list — no update yet.\n\n"
+            f"Still showing: Data as of {current_date}\n\n"
+            f"You'll keep getting this hourly reminder until the date changes.\n\n"
+            f"View it here: https://dhsud.gov.ph/list-of-license-to-sell/\n"
+            f"(Direct data source: {source_url})\n"
+        )
+        sent = send_email(subject, body)
+        if sent:
+            print("  -> Email notification sent (no-change status update).")
+        # No need to re-save state, but touching checked_at is nice for visibility.
+        save_state(current_date, source_url)
 
 
 if __name__ == "__main__":
