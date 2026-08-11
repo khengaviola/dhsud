@@ -1,0 +1,49 @@
+name: DHSUD License-to-Sell Monitor
+
+on:
+  schedule:
+    # Runs every day at 09:00 Manila time (UTC+8) = 01:00 UTC
+    - cron: "0 1 * * *"
+  workflow_dispatch: {}   # lets you also trigger it manually from the Actions tab
+
+permissions:
+  contents: write   # needed so the workflow can commit the updated state.json back to the repo
+
+jobs:
+  check-dhsud:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run DHSUD check
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python3 check_dhsud_update.py
+
+      - name: Commit updated state file (if changed)
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name "dhsud-monitor-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update DHSUD monitor state [skip ci]"
+            git push
+          else
+            echo "No state change to commit."
+          fi
