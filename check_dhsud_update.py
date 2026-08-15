@@ -3,10 +3,9 @@
 DHSUD License-to-Sell List Monitor
 -----------------------------------
 Checks the DHSUD "List of Projects with License to Sell" data source for its
-"Data as of <Month> <Day>, <Year>" label, and emails you EVERY TIME it runs
-(configured for hourly) — one message type if the date is unchanged ("still
-as of June ...") and a different, clearly-flagged message if the date has
-just changed (e.g. flips to "July 31, 2026").
+"Data as of <Month> <Day>, <Year>" label. Runs hourly, but only emails you
+when that date actually CHANGES (e.g. flips from "June 30, 2026" to
+"July 31, 2026") — silent, no email, on runs where nothing has changed.
 
 WHY THIS URL:
 The public page https://dhsud.gov.ph/list-of-license-to-sell/ is just a wrapper
@@ -233,20 +232,9 @@ def main():
     last_date = last_state.get("last_as_of_date")
 
     if last_date is None:
-        # First run — establish baseline, and still send a status email now
-        # (per current configuration this script emails on every run).
-        print("  -> No prior state found. Saving baseline and sending status email.")
-        subject = f"DHSUD List Monitor: baseline set (as of {current_date})"
-        body = (
-            f"Baseline established for the DHSUD License-to-Sell list monitor.\n\n"
-            f"Current: Data as of {current_date}\n\n"
-            f"You'll now get an email every time this check runs, showing the "
-            f"current 'as of' date, so you always know at a glance whether it "
-            f"has moved yet.\n\n"
-            f"View it here: https://dhsud.gov.ph/list-of-license-to-sell/\n"
-            f"(Direct data source: {source_url})\n"
-        )
-        send_email(subject, body)
+        # First run — establish baseline only. No email sent, since there's
+        # nothing yet to compare against.
+        print("  -> No prior state found. Saving baseline, no email sent.")
         save_state(current_date, source_url)
         return
 
@@ -265,20 +253,8 @@ def main():
             print("  -> Email notification sent (change detected).")
         save_state(current_date, source_url)
     else:
-        print(f"  -> No change (still 'Data as of {current_date}').")
-        subject = f"DHSUD list still as of {current_date} (no change)"
-        body = (
-            f"Checked the DHSUD License-to-Sell list — no update yet.\n\n"
-            f"Still showing: Data as of {current_date}\n\n"
-            f"You'll keep getting this hourly reminder until the date changes.\n\n"
-            f"View it here: https://dhsud.gov.ph/list-of-license-to-sell/\n"
-            f"(Direct data source: {source_url})\n"
-        )
-        sent = send_email(subject, body)
-        if sent:
-            print("  -> Email notification sent (no-change status update).")
-        # No need to re-save state, but touching checked_at is nice for visibility.
-        save_state(current_date, source_url)
+        # No change — stay silent. No email sent.
+        print(f"  -> No change (still 'Data as of {current_date}'). No email sent.")
 
 
 if __name__ == "__main__":
